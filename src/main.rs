@@ -16,6 +16,7 @@ async fn main() {
         ).unwrap();
     println!("created tiled_map");
     let npc = load_texture("assets/disciple-45x51.png").await.unwrap();
+    let mut npc_pos = vec2(240., 160.);
 
     let width = 480.;
     let height = 320.;
@@ -31,10 +32,22 @@ async fn main() {
             Rect::new(0.0, 0.0, width, height),
             None,
         );
+        if is_key_down(KeyCode::W) {
+           npc_pos.y -= 1.0;
+        }
+        if is_key_down(KeyCode::A) {
+            npc_pos.x -= 1.0;
+        }
+        if is_key_down(KeyCode::S) {
+            npc_pos.y += 1.0;
+        }
+        if is_key_down(KeyCode::D) {
+            npc_pos.x += 1.0;
+        }
         draw_texture_ex(
             &npc,
-            0.,
-            0.,
+            npc_pos.x,
+            npc_pos.y,
             WHITE,
             DrawTextureParams {
                 source: Some(Rect::new(0.0, 0.0, 45., 51.)),
