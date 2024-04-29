@@ -32,17 +32,19 @@ impl Player {
     }
     fn update(&mut self) {
         if is_key_down(KeyCode::W) {
-            self.pos.y -= Self::MOVE_SPEED;
+            self.speed.y -= Self::MOVE_SPEED;
         }
         if is_key_down(KeyCode::A) {
-            self.pos.x -= Self::MOVE_SPEED;
+            self.speed.x -= Self::MOVE_SPEED;
         }
         if is_key_down(KeyCode::S) {
-            self.pos.y += Self::MOVE_SPEED;
+            self.speed.y += Self::MOVE_SPEED;
         }
         if is_key_down(KeyCode::D) {
-            self.pos.x += Self::MOVE_SPEED;
+            self.speed.x += Self::MOVE_SPEED;
         }
+        self.pos += self.speed.normalize_or_zero() * Self::MOVE_SPEED;
+        self.speed = vec2(0.0, 0.0);
     }
 }
 
