@@ -8,6 +8,40 @@ struct Player {
     pos: Vec2,
 }
 
+struct Tower {
+    cost: i32,
+    weapon: Weapon,
+    pos: Vec2,
+    texture: Texture2D,
+}
+
+enum Weapon {
+    Gun
+}
+
+impl Tower {
+    fn new(cost: i32, weapon: Weapon, pos: Vec2, texture: Texture2D) -> Self {
+        Self {
+            cost,
+            weapon,
+            pos,
+            texture,
+        }
+    }
+    fn draw(&self) {
+        draw_texture_ex(
+            &self.texture,
+            self.pos.x,
+            self.pos.y,
+            WHITE,
+            DrawTextureParams {
+                source: Some(Rect::new(64., 112., 16., 16.)),
+                ..Default::default()
+            },
+        );
+    }
+}
+
 impl Player {
     pub const MOVE_SPEED: f32 = 5.0;
     fn new(pos: Vec2, texture: Texture2D) -> Self {
@@ -19,7 +53,7 @@ impl Player {
     }
     
     fn draw(&self) {
-    draw_texture_ex(
+        draw_texture_ex(
             &self.texture,
             self.pos.x,
             self.pos.y,
@@ -60,10 +94,11 @@ async fn main() {
         ).unwrap();
 
     let player = load_texture("assets/disciple-45x51.png").await.unwrap();
-
     let player_pos = vec2(240., 160.);
     let mut player = Player::new(player_pos, player);
-
+    
+    let tower_texture = load_texture("assets/basictiles.png").await.unwrap();
+    let mut tower = Tower::new(30, Weapon::Gun, vec2(160., 160.), tower_texture);
 
     let width = tiled_map.raw_tiled_map.tilewidth * tiled_map.raw_tiled_map.width;
     let height = tiled_map.raw_tiled_map.tileheight * tiled_map.raw_tiled_map.height;
@@ -80,6 +115,7 @@ async fn main() {
             Rect::new(0.0, 0.0, width as _, height as _),
             None,
         );
+        tower.draw();
         player.update();
         player.draw(); 
         next_frame().await
