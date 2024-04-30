@@ -6,6 +6,7 @@ struct Player {
     speed: Vec2,
     texture: Texture2D,
     pos: Vec2,
+    facing_right: bool,
 }
 
 struct Tower {
@@ -49,10 +50,16 @@ impl Player {
             texture,
             speed: vec2(0., 0.),
             pos,
+            facing_right: true,
         }
     }
     
-    fn draw(&self) {
+    fn draw(&mut self) {
+        if self.speed.x > 0. {
+            self.facing_right = true;
+        } else if self.speed.x < 0. {
+            self.facing_right = false;
+        }
         draw_texture_ex(
             &self.texture,
             self.pos.x,
@@ -60,11 +67,13 @@ impl Player {
             WHITE,
             DrawTextureParams {
                 source: Some(Rect::new(0.0, 0.0, 45., 51.)),
+                flip_x : !self.facing_right,
                 ..Default::default()
             },
         );
     }
     fn update(&mut self) {
+        self.speed = vec2(0.0, 0.0);
         if is_key_down(KeyCode::W) {
             self.speed.y -= Self::MOVE_SPEED;
         }
@@ -78,7 +87,6 @@ impl Player {
             self.speed.x += Self::MOVE_SPEED;
         }
         self.pos += self.speed.normalize_or_zero() * Self::MOVE_SPEED;
-        self.speed = vec2(0.0, 0.0);
     }
 }
 
