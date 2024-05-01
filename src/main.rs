@@ -1,6 +1,14 @@
 use macroquad::prelude::*;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::hash::{Hash, Hasher};
 
 use macroquad_tiled as tiled;
+
+// unique ids
+static COUNTER: AtomicUsize = AtomicUsize::new(1);
+fn get_id() -> usize { COUNTER.fetch_add(1, Ordering::Relaxed) }
+
 
 struct Player {
     speed: Vec2,
@@ -8,7 +16,9 @@ struct Player {
     pos: Vec2,
     facing_right: bool,
     health: f32,
+    id: usize,
 }
+
 
 impl Player {
     pub const MOVE_SPEED: f32 = 5.0;
@@ -19,9 +29,11 @@ impl Player {
             pos,
             facing_right: true,
             health,
+            id: get_id(),
         }
     }
 }
+
 
 struct Tower {
     cost: i32,
@@ -31,7 +43,20 @@ struct Tower {
     strength: f32,
     health: f32,
     bullet_texture: Texture2D,
+    id: usize,
 }
+impl Hash for Tower {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+        self.cost.hash(state);
+    }
+}
+impl PartialEq for Tower {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl Eq for Tower {}
 
 impl Tower {
     fn new(cost: i32, weapon: Weapon, pos: Vec2, texture: Texture2D, strength: f32, health: f32, bullet_texture: Texture2D) -> Self {
@@ -43,24 +68,42 @@ impl Tower {
             strength,
             health,
             bullet_texture,
+            id: get_id(),
         }
     }
-    fn check_shoot(&self, spawn_list: &mut Vec::<Box<dyn Entity>>, entities: &Vec::<Box<dyn Entity>>) {
+    fn check_shoot(&self, spawn_list: &mut Vec::<Box<dyn Entity>>, entities: &HashMap<usize, Box<dyn Entity>>) {
         if is_key_down(KeyCode::Space) {
-            let pos = entities[0].get_position();
-            let velocity = (pos - self.pos);
-            let bullet = Bullet::new(self.bullet_texture.clone(), self.pos, velocity.normalize_or_zero());
-            spawn_list.push(Box::new(bullet));
+            for (id, entity) in entities {
+                if entity.get_position().distance(self.pos) < 50. {
+                    let velocity = entity.get_position() - self.pos;
+                    let bullet = Bullet::new(self.bullet_texture.clone(), self.pos, velocity.normalize_or_zero());
+                    spawn_list.push(Box::new(bullet));
+                    return;
+                }
+            }
         }
     }
 }
+
 
 struct Bullet {
     texture: Texture2D,
     pos: Vec2,
     velocity: Vec2,
     damage: f32,
+    id: usize,
 }
+impl Hash for Bullet {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+impl PartialEq for Bullet {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl Eq for Bullet {}
 
 impl Bullet {
     fn new(texture: Texture2D, pos: Vec2, velocity: Vec2) -> Self {
@@ -69,6 +112,7 @@ impl Bullet {
             pos,
             velocity,
             damage: 10.,
+            id: get_id(),
         }
     }
 }
@@ -96,6 +140,7 @@ impl Entity for Bullet {
             },
         );
     }
+    fn id(&self) -> usize { self.id }
 }
 
 enum Weapon {
@@ -121,10 +166,11 @@ trait Targetable: Health + Position {}
 
 trait Entity: Position {
     fn mut_update(&mut self);
-    fn update(&self, _: &mut Vec::<Box<dyn Entity>>, _: &Vec::<Box<dyn Entity>>) {
+    fn update(&self, _: &mut Vec::<Box<dyn Entity>>, _: &HashMap<usize, Box<dyn Entity>>) {
         return
     }
     fn draw(&self);
+    fn id(&self) -> usize;
 }
 
 impl Entity for Tower {
@@ -143,9 +189,10 @@ impl Entity for Tower {
     fn mut_update(&mut self) {
         return
     }
-    fn update(&self, spawn_list: &mut Vec::<Box<dyn Entity>>, entities: &Vec::<Box<dyn Entity>>) {
+    fn update(&self, spawn_list: &mut Vec::<Box<dyn Entity>>, entities: &HashMap<usize, Box<dyn Entity>>) {
         Self::check_shoot(&self, spawn_list, &entities);
     }
+    fn id(&self) -> usize { self.id }
 }
 impl Position for Tower {
     fn get_position(&self) -> Vec2 {
@@ -202,6 +249,7 @@ impl Entity for Player {
             self.facing_right = false;
         }
     }
+    fn id(&self) -> usize { self.id }
 }
 
 #[macroquad::main("BasicShapes")]
@@ -214,18 +262,20 @@ async fn main() {
         &[("basictiles.png", tileset)],
         &[],
         ).unwrap();
-    let mut entities: Vec<Box<dyn Entity>> = vec![];
+//    let mut entities: Vec<Box<dyn Entity>> = vec![];
+    let mut entities: HashMap<usize, Box<dyn Entity>> = HashMap::new();
     let mut spawn_list: Vec<Box<dyn Entity>> = vec![];
 
     let player = load_texture("assets/disciple-45x51.png").await.unwrap();
     let player_pos = vec2(240., 160.);
     let mut player = Player::new(player_pos, player, 100.);
-    entities.push(Box::new(player));
+//    entities.push(Box::new(player));
     
     let tower_texture = load_texture("assets/basictiles.png").await.unwrap();
     let bullet_texture = load_texture("assets/smallbullet.png").await.unwrap();
     let mut tower = Tower::new(30, Weapon::Gun, vec2(160., 160.), tower_texture, 5., 500., bullet_texture);
-    entities.push(Box::new(tower));
+//    entities.push(Box::new(tower));
+    entities.insert(tower.id(), Box::new(tower));
 
     let width = tiled_map.raw_tiled_map.tilewidth * tiled_map.raw_tiled_map.width;
     let height = tiled_map.raw_tiled_map.tileheight * tiled_map.raw_tiled_map.height;
@@ -244,20 +294,25 @@ async fn main() {
             None,
         );
         // update actions of entities passing in spawn list in case they spawn new things
-        for entity in entities.iter_mut() {
+        for (id, entity) in &mut entities {
             entity.mut_update();
         }
-        for entity in entities.iter() {
+        for (id, entity) in &entities {
             entity.update(&mut spawn_list, &entities);
         }
         // push new entities to entities list
         while spawn_list.len() > 0 {
-            entities.push(spawn_list.pop().expect("Could not unwrap."));
+            let to_spawn = spawn_list.pop().expect("Entity to spawn disappeared");
+            entities.insert(to_spawn.id(), to_spawn);
         }
         // draw all entities to screen
-        for entity in entities.iter() {
+        for (id, entity) in &entities {
             entity.draw()
         }
+        // update and draw player
+        player.mut_update();
+        player.update(&mut spawn_list, &entities);
+        player.draw();
 
         next_frame().await
     }
