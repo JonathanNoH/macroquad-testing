@@ -30,10 +30,11 @@ struct Tower {
     texture: Texture2D,
     strength: f32,
     health: f32,
+    bullet_texture: Texture2D,
 }
 
 impl Tower {
-    fn new(cost: i32, weapon: Weapon, pos: Vec2, texture: Texture2D, strength: f32, health: f32) -> Self {
+    fn new(cost: i32, weapon: Weapon, pos: Vec2, texture: Texture2D, strength: f32, health: f32, bullet_texture: Texture2D) -> Self {
         Self {
             cost,
             weapon,
@@ -41,20 +42,72 @@ impl Tower {
             texture,
             strength,
             health,
+            bullet_texture,
         }
     }
-    fn shoot(&self, target: &mut (impl Health + Position)) {
-        target.take_damage(self.strength);
-        Self::draw_bullet(self.pos, &self.weapon, target.get_position());
+    fn check_shoot(&self, spawn_list: &mut Vec::<Box<dyn Entity>>, entities: &Vec::<Box<dyn Entity>>) {
+        if is_key_down(KeyCode::Space) {
+            let pos = entities[0].get_position();
+            let velocity = (pos - self.pos);
+            let bullet = Bullet::new(self.bullet_texture.clone(), self.pos, velocity.normalize_or_zero());
+            spawn_list.push(Box::new(bullet));
+        }
     }
-    fn draw_bullet(pos: Vec2, weapon: &Weapon, target_pos: Vec2) {
-        //let bullet_texture = load_texture("assets/smallbullet.png").await.unwrap();
+}
+
+struct Bullet {
+    texture: Texture2D,
+    pos: Vec2,
+    velocity: Vec2,
+    damage: f32,
+}
+
+impl Bullet {
+    fn new(texture: Texture2D, pos: Vec2, velocity: Vec2) -> Self {
+        Self {
+            texture,
+            pos,
+            velocity,
+            damage: 10.,
+        }
+    }
+}
+
+impl Position for Bullet {
+    fn get_position(&self) -> Vec2 {
+        self.pos
+    }
+}
+
+impl Entity for Bullet {
+    fn mut_update(&mut self) {
+        if self.pos.x < 300. || self.pos.y < 300. {
+            self.pos += self.velocity;
+        }
+    }
+    fn draw(&self) {
+        draw_texture_ex(
+            &self.texture,
+            self.pos.x,
+            self.pos.y,
+            WHITE,
+            DrawTextureParams {
+                ..Default::default()
+            },
+        );
     }
 }
 
 enum Weapon {
     Gun
 }
+/*
+enum EntityEnum {
+    Tower,
+    Player,
+    Enemy
+}
+*/
 
 trait Health {
     fn take_damage(&mut self, amount: f32);
@@ -64,8 +117,13 @@ trait Position {
     fn get_position(&self) -> Vec2;
 }
 
-trait Entity {
-    fn update(&mut self, spawn_list: &mut Vec<Box<dyn Entity>>);
+trait Targetable: Health + Position {}
+
+trait Entity: Position {
+    fn mut_update(&mut self);
+    fn update(&self, _: &mut Vec::<Box<dyn Entity>>, _: &Vec::<Box<dyn Entity>>) {
+        return
+    }
     fn draw(&self);
 }
 
@@ -82,8 +140,11 @@ impl Entity for Tower {
             },
         );
     } 
-    fn update(&mut self, _: &mut Vec::<Box<dyn Entity>>) {
+    fn mut_update(&mut self) {
         return
+    }
+    fn update(&self, spawn_list: &mut Vec::<Box<dyn Entity>>, entities: &Vec::<Box<dyn Entity>>) {
+        Self::check_shoot(&self, spawn_list, &entities);
     }
 }
 impl Position for Tower {
@@ -101,6 +162,7 @@ impl Position for Player {
 impl Health for Player {
     fn take_damage(&mut self, amount: f32) {
         self.health -= amount;
+        println!("{}", self.health);
     }
 }
 
@@ -119,7 +181,7 @@ impl Entity for Player {
             },
         );
     }
-    fn update(&mut self, spawn_list: &mut Vec<Box<dyn Entity>>) {
+    fn mut_update(&mut self) {
         self.speed = vec2(0.0, 0.0);
         if is_key_down(KeyCode::W) {
             self.speed.y -= Self::MOVE_SPEED;
@@ -161,7 +223,8 @@ async fn main() {
     entities.push(Box::new(player));
     
     let tower_texture = load_texture("assets/basictiles.png").await.unwrap();
-    let mut tower = Tower::new(30, Weapon::Gun, vec2(160., 160.), tower_texture, 5., 500.);
+    let bullet_texture = load_texture("assets/smallbullet.png").await.unwrap();
+    let mut tower = Tower::new(30, Weapon::Gun, vec2(160., 160.), tower_texture, 5., 500., bullet_texture);
     entities.push(Box::new(tower));
 
     let width = tiled_map.raw_tiled_map.tilewidth * tiled_map.raw_tiled_map.width;
@@ -182,7 +245,10 @@ async fn main() {
         );
         // update actions of entities passing in spawn list in case they spawn new things
         for entity in entities.iter_mut() {
-            entity.update(&mut spawn_list);
+            entity.mut_update();
+        }
+        for entity in entities.iter() {
+            entity.update(&mut spawn_list, &entities);
         }
         // push new entities to entities list
         while spawn_list.len() > 0 {
