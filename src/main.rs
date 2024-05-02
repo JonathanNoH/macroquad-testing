@@ -381,7 +381,13 @@ async fn main() {
             projectile.mut_update();
             projectile.draw();
         }
-        // draw monstes
+        // despawn monsters when far enough from player
+        let player_pos = player.get_position();
+        monsters.retain(|&key, value| {
+            let pos = value.get_position();
+            pos.distance(player_pos) < 2000.
+        });
+        // draw monsters
         for (_id, monster) in &mut monsters {
             monster.mut_update();
             monster.draw();
