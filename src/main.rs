@@ -302,6 +302,7 @@ trait Monster: Position {
     fn id(&self) -> usize;
     fn draw(&self);
     fn mut_update(&mut self, _: &mut HashMap<usize, Box<dyn Projectile>>);
+    fn health(&self) -> f32;
 }
 
 impl Monster for EyeMonster {
@@ -331,6 +332,7 @@ impl Monster for EyeMonster {
             retain
         });
     }
+    fn health(&self) -> f32 { self.health }
 }
 
 impl Position for EyeMonster {
@@ -429,10 +431,18 @@ async fn main() {
             projectile.draw();
         }
         // despawn monsters when far enough from player
+        // or when monster is dead (health < 0)
         let player_pos = player.get_position();
         monsters.retain(|_, value| {
+            let mut retain = true;
             let pos = value.get_position();
-            pos.distance(player_pos) < 2000.
+            if pos.distance(player_pos) > 2000. {
+                retain = false;
+            }
+            if value.health() < 0. {
+                retain = false
+            }
+            retain
         });
         // draw monsters
         for (_id, monster) in &mut monsters {
