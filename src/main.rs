@@ -1,18 +1,61 @@
 use macroquad::prelude::*;
+use macroquad::experimental::collections::storage;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::hash::{Hash, Hasher};
+/*
+use std::{
+    cell::RefCell,
+    ops::{Deref, DerefMut},
+    rc::Rc,
+};
+*/
+struct Resources {
+    player_texture: Texture2D,
+    tower_texture: Texture2D,
+    monster_texture: Texture2D,
+    bullet_texture: Texture2D
+}
 
 use macroquad_tiled as tiled;
 
 // unique ids
 static COUNTER: AtomicUsize = AtomicUsize::new(1);
 fn get_id() -> usize { COUNTER.fetch_add(1, Ordering::Relaxed) }
+/*
+// adapted from experimental macrosquad STORAGE
+static mut TEXTURES: Option<HashMap<&str, Box<Rc<RefCell<Texture2D>>>>> = None;
 
+fn store_texture(name: &'static str, texture: Texture2D) {
+    unsafe {
+        if TEXTURES.is_none() {
+            TEXTURES = Some(HashMap::new());
+        }
+
+        *TEXTURES
+            .as_mut()
+            .unwrap()
+            .insert(name, Box::new(Rc::new(RefCell::new(texture))))
+            .expect("ERROR INSERTING TEXTURE")
+    };
+}
+
+fn get_texture(name: &str) -> &Texture2D {
+    unsafe {
+        if TEXTURES.is_none() {
+            TEXTURES = Some(HashMap::new());
+        }
+        TEXTURES
+            .as_mut()
+            .unwrap()
+            .get(name)
+            .expect("MISSING TEXTURE")
+    }
+}
+*/
 
 struct Player {
     speed: Vec2,
-    texture: Texture2D,
     pos: Vec2,
     facing_right: bool,
     health: f32,
@@ -22,9 +65,8 @@ struct Player {
 
 impl Player {
     pub const MOVE_SPEED: f32 = 5.0;
-    fn new(pos: Vec2, texture: Texture2D, health: f32) -> Self {
+    fn new(pos: Vec2, health: f32) -> Self {
         Self {
-            texture,
             speed: vec2(0., 0.),
             pos,
             facing_right: true,
@@ -39,10 +81,8 @@ struct Tower {
     cost: i32,
     weapon: Weapon,
     pos: Vec2,
-    texture: Texture2D,
     strength: f32,
     health: f32,
-    bullet_texture: Texture2D,
     id: usize,
     shot_cooldown: f64,
     last_shot_time: f64,
@@ -61,15 +101,13 @@ impl PartialEq for Tower {
 impl Eq for Tower {}
 
 impl Tower {
-    fn new(cost: i32, weapon: Weapon, pos: Vec2, texture: Texture2D, strength: f32, health: f32, bullet_texture: Texture2D) -> Self {
+    fn new(cost: i32, weapon: Weapon, pos: Vec2, strength: f32, health: f32) -> Self {
         Self {
             cost,
             weapon,
             pos,
-            texture,
             strength,
             health,
-            bullet_texture,
             id: get_id(),
             shot_cooldown: 1.,
             last_shot_time: 1.,
@@ -77,10 +115,10 @@ impl Tower {
     }
     fn check_shoot(&mut self, projectiles: &mut HashMap<usize, Box<dyn Entity>>, monsters: &HashMap<usize, Box<dyn Entity>>) {
         if get_time() - self.last_shot_time > self.shot_cooldown {
-            for (id, monster) in monsters {
+            for (_id, monster) in monsters {
                 if monster.get_position().distance(self.pos) < 150. {
                     let velocity = monster.get_position() - self.pos;
-                    let bullet = Bullet::new(self.bullet_texture.clone(), self.pos, velocity.normalize_or_zero(), self.strength);
+                    let bullet = Bullet::new(self.pos, velocity.normalize_or_zero(), self.strength);
                     projectiles.insert(bullet.id(), Box::new(bullet));
                     self.last_shot_time = get_time();
                     return;
@@ -92,7 +130,6 @@ impl Tower {
 
 
 struct Bullet {
-    texture: Texture2D,
     pos: Vec2,
     velocity: Vec2,
     damage: f32,
@@ -111,9 +148,8 @@ impl PartialEq for Bullet {
 impl Eq for Bullet {}
 
 impl Bullet {
-    fn new(texture: Texture2D, pos: Vec2, velocity: Vec2, damage: f32) -> Self {
+    fn new(pos: Vec2, velocity: Vec2, damage: f32) -> Self {
         Self {
-            texture,
             pos,
             velocity,
             damage,
@@ -133,8 +169,9 @@ impl Entity for Bullet {
         self.pos += self.velocity;
     }
     fn draw(&self) {
+        let resources = storage::get::<Resources>();
         draw_texture_ex(
-            &self.texture,
+            &resources.bullet_texture,
             self.pos.x,
             self.pos.y,
             WHITE,
@@ -184,8 +221,9 @@ trait TowerType: Position {
 
 impl TowerType for Tower {
     fn draw(&self) {
+        let resources = storage::get::<Resources>();
         draw_texture_ex(
-            &self.texture,
+            &resources.tower_texture,
             self.pos.x,
             self.pos.y,
             WHITE,
@@ -221,10 +259,11 @@ impl Health for Player {
 }
 
 
-impl Entity for Player {    
+impl Player {    
     fn draw(&self) {
+        let resources = storage::get::<Resources>();
         draw_texture_ex(
-            &self.texture,
+            &resources.player_texture,
             self.pos.x,
             self.pos.y,
             WHITE,
@@ -235,7 +274,7 @@ impl Entity for Player {
             },
         );
     }
-    fn mut_update(&mut self) {
+    fn mut_update(&mut self, towers: &mut HashMap<usize, Box<dyn TowerType>>) {
         self.speed = vec2(0.0, 0.0);
         if is_key_down(KeyCode::W) {
             self.speed.y -= Self::MOVE_SPEED;
@@ -255,6 +294,10 @@ impl Entity for Player {
         } else if self.speed.x < 0. {
             self.facing_right = false;
         }
+        if is_key_pressed(KeyCode::Space) {
+            let tower = Tower::new(30, Weapon::Gun, vec2(160., 160.), 5., 500.);
+            towers.insert(tower.id(), Box::new(tower));
+        }
     }
     fn id(&self) -> usize { self.id }
 }
@@ -263,15 +306,13 @@ struct EyeMonster {
     health: f32,
     velocity: Vec2,
     id: usize,
-    texture: Texture2D,
     pos: Vec2,
     facing_right: bool,
 }
 impl EyeMonster {
-    fn new(health: f32, texture: Texture2D, pos: Vec2, velocity: Vec2) -> Self {
+    fn new(health: f32, pos: Vec2, velocity: Vec2) -> Self {
         Self {
             health,
-            texture,
             pos,
             velocity,
             id: get_id(),
@@ -287,8 +328,9 @@ impl Position for EyeMonster {
 impl Entity for EyeMonster {
     fn id(&self) -> usize { self.id }
     fn draw(&self) {
+        let resources = storage::get::<Resources>();
         draw_texture_ex(
-            &self.texture,
+            &resources.monster_texture,
             self.pos.x,
             self.pos.y,
             WHITE,
@@ -303,7 +345,7 @@ impl Entity for EyeMonster {
     }
 }
  
-#[macroquad::main("BasicShapes")]
+#[macroquad::main("TD Survive")]
 async fn main() {
     let tileset: Texture2D = load_texture("assets/basictiles.png").await.unwrap();
     tileset.set_filter(FilterMode::Nearest);
@@ -315,27 +357,42 @@ async fn main() {
         ).unwrap();
 //    let mut entities: Vec<Box<dyn Entity>> = vec![];
     let mut towers: HashMap<usize, Box<dyn TowerType>> = HashMap::new();
-    let mut spawn_list: Vec<Box<dyn Entity>> = vec![];
     let mut monsters: HashMap<usize, Box<dyn Entity>> = HashMap::new();
     let mut projectiles: HashMap<usize, Box<dyn Entity>> = HashMap::new();
-
-    let player = load_texture("assets/disciple-45x51.png").await.unwrap();
-    let player_pos = vec2(240., 160.);
-    let mut player = Player::new(player_pos, player, 100.);
-//    entities.push(Box::new(player));
     
+    
+    let player_texture = load_texture("assets/disciple-45x51.png").await.unwrap();
     let tower_texture = load_texture("assets/basictiles.png").await.unwrap();
     let bullet_texture = load_texture("assets/smallbullet.png").await.unwrap();
-    let mut tower = Tower::new(30, Weapon::Gun, vec2(160., 160.), tower_texture, 5., 500., bullet_texture);
+    let monster_texture = load_texture("assets/eyemonster.png").await.unwrap();
+    /*
+    store_texture("player", player);
+    store_texture("tower", tower_texture);
+    store_texture("monster", monster_texture);
+    store_texture("bullet", bullet_texture);
+    */
+    let resources = Resources {
+        player_texture,
+        tower_texture,
+        bullet_texture,
+        monster_texture
+    };
+    storage::store(resources);
+
+
+    let player_pos = vec2(240., 160.);
+    let mut player = Player::new(player_pos, 100.);
+//    entities.push(Box::new(player));
+    
+    let tower = Tower::new(30, Weapon::Gun, vec2(160., 160.), 5., 500.);
 //    entities.push(Box::new(tower));
     towers.insert(tower.id(), Box::new(tower));
-    let monster_texture = load_texture("assets/eyemonster.png").await.unwrap();
 
     let width = tiled_map.raw_tiled_map.tilewidth * tiled_map.raw_tiled_map.width;
     let height = tiled_map.raw_tiled_map.tileheight * tiled_map.raw_tiled_map.height;
 
     let mut monster_timer_prev = get_time();
-    let mut monster_timer_curr = get_time();
+    
     
     loop {
         // draw background
@@ -355,24 +412,19 @@ async fn main() {
             tower.mut_update(&mut projectiles, &monsters);
         }
         // check to spawn monster
-        monster_timer_curr = get_time();
+        let monster_timer_curr = get_time();
         if monster_timer_curr - monster_timer_prev > 6. {
-            let monster = EyeMonster::new(100., monster_texture.clone(), vec2(0.,0.), vec2(0.5,0.5));
+            let monster = EyeMonster::new(100., vec2(0.,0.), vec2(0.5,0.5));
             monsters.insert(monster.id(), Box::new(monster));
             monster_timer_prev = monster_timer_curr;
         }
 
-        // push new entities to entities list
-        //while spawn_list.len() > 0 {
-        //    let to_spawn = spawn_list.pop().expect("Entity to spawn disappeared");
-        //    projectiles.insert(to_spawn.id(), to_spawn);
-        //}
         // draw all towers to screen
         for (_id, tower) in &towers {
             tower.draw();
         }
         // remove projectiles out of bounds
-        projectiles.retain(|&key, value| {
+        projectiles.retain(|_, value| {
                                 let pos = value.get_position();
                                 pos.x > 0. && pos.x < width as _ && pos.y > 0. && pos.y < height as _
                             });
@@ -383,7 +435,7 @@ async fn main() {
         }
         // despawn monsters when far enough from player
         let player_pos = player.get_position();
-        monsters.retain(|&key, value| {
+        monsters.retain(|_, value| {
             let pos = value.get_position();
             pos.distance(player_pos) < 2000.
         });
@@ -393,7 +445,7 @@ async fn main() {
             monster.draw();
         }
         // update and draw player
-        player.mut_update();
+        player.mut_update(&mut towers);
         player.draw();
 
         next_frame().await
