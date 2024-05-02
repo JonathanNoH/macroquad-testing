@@ -3,13 +3,7 @@ use macroquad::experimental::collections::storage;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::hash::{Hash, Hasher};
-/*
-use std::{
-    cell::RefCell,
-    ops::{Deref, DerefMut},
-    rc::Rc,
-};
-*/
+
 struct Resources {
     player_texture: Texture2D,
     tower_texture: Texture2D,
@@ -22,37 +16,6 @@ use macroquad_tiled as tiled;
 // unique ids
 static COUNTER: AtomicUsize = AtomicUsize::new(1);
 fn get_id() -> usize { COUNTER.fetch_add(1, Ordering::Relaxed) }
-/*
-// adapted from experimental macrosquad STORAGE
-static mut TEXTURES: Option<HashMap<&str, Box<Rc<RefCell<Texture2D>>>>> = None;
-
-fn store_texture(name: &'static str, texture: Texture2D) {
-    unsafe {
-        if TEXTURES.is_none() {
-            TEXTURES = Some(HashMap::new());
-        }
-
-        *TEXTURES
-            .as_mut()
-            .unwrap()
-            .insert(name, Box::new(Rc::new(RefCell::new(texture))))
-            .expect("ERROR INSERTING TEXTURE")
-    };
-}
-
-fn get_texture(name: &str) -> &Texture2D {
-    unsafe {
-        if TEXTURES.is_none() {
-            TEXTURES = Some(HashMap::new());
-        }
-        TEXTURES
-            .as_mut()
-            .unwrap()
-            .get(name)
-            .expect("MISSING TEXTURE")
-    }
-}
-*/
 
 struct Player {
     speed: Vec2,
@@ -113,7 +76,7 @@ impl Tower {
             last_shot_time: 1.,
         }
     }
-    fn check_shoot(&mut self, projectiles: &mut HashMap<usize, Box<dyn Entity>>, monsters: &HashMap<usize, Box<dyn Entity>>) {
+    fn check_shoot(&mut self, projectiles: &mut HashMap<usize, Box<dyn Projectile>>, monsters: &HashMap<usize, Box<dyn Monster>>) {
         if get_time() - self.last_shot_time > self.shot_cooldown {
             for (_id, monster) in monsters {
                 if monster.get_position().distance(self.pos) < 150. {
@@ -134,6 +97,7 @@ struct Bullet {
     velocity: Vec2,
     damage: f32,
     id: usize,
+    hitbox: Rect,
 }
 impl Hash for Bullet {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -154,8 +118,10 @@ impl Bullet {
             velocity,
             damage,
             id: get_id(),
+            hitbox: Rect::new(pos.x,pos.y,18.,16.),
         }
     }
+    
 }
 
 impl Position for Bullet {
@@ -164,9 +130,18 @@ impl Position for Bullet {
     }
 }
 
-impl Entity for Bullet {
+trait Projectile: Position {
+    fn id(&self) -> usize;
+    fn draw(&self);
+    fn hitbox(&self) -> Rect;
+    fn mut_update(&mut self);
+    fn damage(&self) -> f32;
+}
+
+impl Projectile for Bullet {
     fn mut_update(&mut self) {
         self.pos += self.velocity;
+        self.hitbox.move_to(self.pos);
     }
     fn draw(&self) {
         let resources = storage::get::<Resources>();
@@ -181,18 +156,15 @@ impl Entity for Bullet {
         );
     }
     fn id(&self) -> usize { self.id }
+    fn hitbox(&self) -> Rect {
+        self.hitbox
+    }
+    fn damage(&self) -> f32 { self.damage }
 }
 
 enum Weapon {
     Gun
 }
-/*
-enum EntityEnum {
-    Tower,
-    Player,
-    Enemy
-}
-*/
 
 trait Health {
     fn take_damage(&mut self, amount: f32);
@@ -214,7 +186,7 @@ trait Entity: Position {
 }
 
 trait TowerType: Position {
-    fn mut_update(&mut self, _: &mut HashMap<usize, Box<dyn Entity>>, _: &HashMap<usize, Box<dyn Entity>>);
+    fn mut_update(&mut self, _: &mut HashMap<usize, Box<dyn Projectile>>, _: &HashMap<usize, Box<dyn Monster>>);
     fn draw(&self);
     fn id(&self) -> usize;
 }
@@ -233,7 +205,7 @@ impl TowerType for Tower {
             },
         );
     } 
-    fn mut_update(&mut self, projectiles: &mut HashMap<usize, Box<dyn Entity>> , monsters: &HashMap<usize, Box<dyn Entity>>) {
+    fn mut_update(&mut self, projectiles: &mut HashMap<usize, Box<dyn Projectile>> , monsters: &HashMap<usize, Box<dyn Monster>>) {
         Self::check_shoot(self, projectiles, monsters);
     }
     
@@ -295,7 +267,7 @@ impl Player {
             self.facing_right = false;
         }
         if is_key_pressed(KeyCode::Space) {
-            let tower = Tower::new(30, Weapon::Gun, vec2(160., 160.), 5., 500.);
+            let tower = Tower::new(30, Weapon::Gun, self.pos, 5., 500.);
             towers.insert(tower.id(), Box::new(tower));
         }
     }
@@ -308,6 +280,7 @@ struct EyeMonster {
     id: usize,
     pos: Vec2,
     facing_right: bool,
+    hitbox: Rect,
 }
 impl EyeMonster {
     fn new(health: f32, pos: Vec2, velocity: Vec2) -> Self {
@@ -317,15 +290,21 @@ impl EyeMonster {
             velocity,
             id: get_id(),
             facing_right: velocity.x > 0.,
+            hitbox: Rect::new(pos.x, pos.y, 60., 54.),
         }
+    }
+    fn hitbox(&self) -> Rect {
+        self.hitbox
     }
 }
 
-impl Position for EyeMonster {
-    fn get_position(&self) -> Vec2 { self.pos }
+trait Monster: Position {
+    fn id(&self) -> usize;
+    fn draw(&self);
+    fn mut_update(&mut self, _: &mut HashMap<usize, Box<dyn Projectile>>);
 }
 
-impl Entity for EyeMonster {
+impl Monster for EyeMonster {
     fn id(&self) -> usize { self.id }
     fn draw(&self) {
         let resources = storage::get::<Resources>();
@@ -340,10 +319,26 @@ impl Entity for EyeMonster {
             },
         );
     }
-    fn mut_update(&mut self) {
-        self.pos += self.velocity;
+    fn mut_update(&mut self, projectiles: &mut HashMap<usize, Box<dyn Projectile>>) {
+        self.pos += self.velocity; 
+        self.hitbox.move_to(self.pos);
+        projectiles.retain(|_, projectile| {
+            let mut retain = true;
+            if self.hitbox().overlaps(&projectile.hitbox()) {
+                self.health -= projectile.damage();
+                retain = false;
+            }
+            retain
+        });
     }
 }
+
+impl Position for EyeMonster {
+    fn get_position(&self) -> Vec2 { self.pos }
+}
+
+//impl Entity for EyeMonster {
+
  
 #[macroquad::main("TD Survive")]
 async fn main() {
@@ -357,8 +352,8 @@ async fn main() {
         ).unwrap();
 //    let mut entities: Vec<Box<dyn Entity>> = vec![];
     let mut towers: HashMap<usize, Box<dyn TowerType>> = HashMap::new();
-    let mut monsters: HashMap<usize, Box<dyn Entity>> = HashMap::new();
-    let mut projectiles: HashMap<usize, Box<dyn Entity>> = HashMap::new();
+    let mut monsters: HashMap<usize, Box<dyn Monster>> = HashMap::new();
+    let mut projectiles: HashMap<usize, Box<dyn Projectile>> = HashMap::new();
     
     
     let player_texture = load_texture("assets/disciple-45x51.png").await.unwrap();
@@ -441,7 +436,7 @@ async fn main() {
         });
         // draw monsters
         for (_id, monster) in &mut monsters {
-            monster.mut_update();
+            monster.mut_update(&mut projectiles);
             monster.draw();
         }
         // update and draw player
