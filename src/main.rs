@@ -4,14 +4,35 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::hash::{Hash, Hasher};
 
+use macroquad_tiled as tiled;
+
 struct Resources {
     player_texture: Texture2D,
     tower_texture: Texture2D,
     monster_texture: Texture2D,
     bullet_texture: Texture2D
 }
+static RED_HEALTH_BAR: DrawRectangleParams = 
+    DrawRectangleParams {
+        color: Color{ r:0.82,
+        b: 0.122,
+        g: 0.051,
+        a: 1. },
+        rotation: 0.,
+        offset: vec2(0.,0.)
+    };
+static GREEN_HEALTH_BAR: DrawRectangleParams = DrawRectangleParams {
+    color: Color{
+        r: 0.129,
+        g: 0.859,
+        b: 0.18,
+        a: 1.,
+    },
+    rotation: 0.,
+    offset: vec2(0., 0.)
+};
+static EYE_MONSTER_SPEED: f32 = 1.;
 
-use macroquad_tiled as tiled;
 
 // unique ids
 static COUNTER: AtomicUsize = AtomicUsize::new(1);
@@ -22,6 +43,7 @@ struct Player {
     pos: Vec2,
     facing_right: bool,
     health: f32,
+    max_health: f32,
     id: usize,
 }
 
@@ -34,6 +56,7 @@ impl Player {
             pos,
             facing_right: true,
             health,
+            max_health: health,
             id: get_id(),
         }
     }
@@ -245,6 +268,8 @@ impl Player {
                 ..Default::default()
             },
         );
+        draw_rectangle_ex(self.pos.x, self.pos.y-8., 45., 3., RED_HEALTH_BAR.clone());
+        draw_rectangle_ex(self.pos.x, self.pos.y-8., 45.*(self.health/self.max_health), 3., GREEN_HEALTH_BAR.clone());
     }
     fn mut_update(&mut self, towers: &mut HashMap<usize, Box<dyn TowerType>>) {
         self.speed = vec2(0.0, 0.0);
@@ -276,6 +301,7 @@ impl Player {
 
 struct EyeMonster {
     health: f32,
+    max_health: f32,
     velocity: Vec2,
     id: usize,
     pos: Vec2,
@@ -286,6 +312,7 @@ impl EyeMonster {
     fn new(health: f32, pos: Vec2, velocity: Vec2) -> Self {
         Self {
             health,
+            max_health: health,
             pos,
             velocity,
             id: get_id(),
@@ -301,7 +328,7 @@ impl EyeMonster {
 trait Monster: Position {
     fn id(&self) -> usize;
     fn draw(&self);
-    fn mut_update(&mut self, _: &mut HashMap<usize, Box<dyn Projectile>>);
+    fn mut_update(&mut self, _: &mut HashMap<usize, Box<dyn Projectile>>, _: Vec2);
     fn health(&self) -> f32;
 }
 
@@ -319,8 +346,13 @@ impl Monster for EyeMonster {
                 ..Default::default()
             },
         );
+        draw_rectangle_ex(self.pos.x, self.pos.y-8., 60., 3., RED_HEALTH_BAR.clone());
+        draw_rectangle_ex(self.pos.x, self.pos.y-8., 60.*(self.health/self.max_health), 3., GREEN_HEALTH_BAR.clone());
+
     }
-    fn mut_update(&mut self, projectiles: &mut HashMap<usize, Box<dyn Projectile>>) {
+    fn mut_update(&mut self, projectiles: &mut HashMap<usize, Box<dyn Projectile>>, target: Vec2) {
+        let distance_vector = vec2(target.x - self.pos.x, target.y - self.pos.y);
+        self.velocity = distance_vector.normalize_or_zero()*EYE_MONSTER_SPEED;
         self.pos += self.velocity; 
         self.hitbox.move_to(self.pos);
         projectiles.retain(|_, projectile| {
@@ -411,7 +443,11 @@ async fn main() {
         // check to spawn monster
         let monster_timer_curr = get_time();
         if monster_timer_curr - monster_timer_prev > 6. {
-            let monster = EyeMonster::new(100., vec2(0.,0.), vec2(0.5,0.5));
+            let monster = EyeMonster::new(
+                100.,
+                vec2(0.,0.),
+                player.get_position().normalize_or_zero()*EYE_MONSTER_SPEED
+            );
             monsters.insert(monster.id(), Box::new(monster));
             monster_timer_prev = monster_timer_curr;
         }
@@ -445,8 +481,9 @@ async fn main() {
             retain
         });
         // draw monsters
+        let player_pos = player.get_position();
         for (_id, monster) in &mut monsters {
-            monster.mut_update(&mut projectiles);
+            monster.mut_update(&mut projectiles, player_pos);
             monster.draw();
         }
         // update and draw player
