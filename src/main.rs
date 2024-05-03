@@ -65,7 +65,6 @@ impl Player {
 
 struct Tower {
     cost: i32,
-    weapon: Weapon,
     pos: Vec2,
     strength: f32,
     health: f32,
@@ -87,10 +86,9 @@ impl PartialEq for Tower {
 impl Eq for Tower {}
 
 impl Tower {
-    fn new(cost: i32, weapon: Weapon, pos: Vec2, strength: f32, health: f32) -> Self {
+    fn new(cost: i32, pos: Vec2, strength: f32, health: f32) -> Self {
         Self {
             cost,
-            weapon,
             pos,
             strength,
             health,
@@ -183,10 +181,6 @@ impl Projectile for Bullet {
         self.hitbox
     }
     fn damage(&self) -> f32 { self.damage }
-}
-
-enum Weapon {
-    Gun
 }
 
 trait Health {
@@ -292,7 +286,7 @@ impl Player {
             self.facing_right = false;
         }
         if is_key_pressed(KeyCode::Space) {
-            let tower = Tower::new(30, Weapon::Gun, self.pos, 5., 500.);
+            let tower = Tower::new(30, self.pos, 5., 500.);
             towers.insert(tower.id(), Box::new(tower));
         }
     }
@@ -413,7 +407,7 @@ async fn main() {
     let mut player = Player::new(player_pos, 100.);
 //    entities.push(Box::new(player));
     
-    let tower = Tower::new(30, Weapon::Gun, vec2(160., 160.), 5., 500.);
+    let tower = Tower::new(30, vec2(160., 160.), 5., 500.);
 //    entities.push(Box::new(tower));
     towers.insert(tower.id(), Box::new(tower));
 
