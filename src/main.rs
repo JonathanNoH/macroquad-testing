@@ -38,36 +38,13 @@ static EYE_MONSTER_SPEED: f32 = 1.;
 static COUNTER: AtomicUsize = AtomicUsize::new(1);
 fn get_id() -> usize { COUNTER.fetch_add(1, Ordering::Relaxed) }
 
-struct Player {
-    speed: Vec2,
-    pos: Vec2,
-    facing_right: bool,
-    health: f32,
-    max_health: f32,
-    id: usize,
-}
-
-
-impl Player {
-    pub const MOVE_SPEED: f32 = 5.0;
-    fn new(pos: Vec2, health: f32) -> Self {
-        Self {
-            speed: vec2(0., 0.),
-            pos,
-            facing_right: true,
-            health,
-            max_health: health,
-            id: get_id(),
-        }
-    }
-}
-
 
 struct Tower {
     cost: i32,
     pos: Vec2,
     strength: f32,
     health: f32,
+    max_health: f32,
     id: usize,
     shot_cooldown: f64,
     last_shot_time: f64,
@@ -92,6 +69,7 @@ impl Tower {
             pos,
             strength,
             health,
+            max_health: health,
             id: get_id(),
             shot_cooldown: 1.,
             last_shot_time: 1.,
@@ -109,6 +87,41 @@ impl Tower {
                 }
             }
         }
+    }
+}
+
+trait TowerType: Position {
+    fn mut_update(&mut self, _: &mut HashMap<usize, Box<dyn Projectile>>, _: &HashMap<usize, Box<dyn Monster>>);
+    fn draw(&self);
+    fn id(&self) -> usize;
+}
+
+impl TowerType for Tower {
+    fn draw(&self) {
+        let resources = storage::get::<Resources>();
+        draw_texture_ex(
+            &resources.tower_texture,
+            self.pos.x,
+            self.pos.y,
+            WHITE,
+            DrawTextureParams {
+                source: Some(Rect::new(64., 112., 16., 16.)),
+                ..Default::default()
+            },
+        );
+        if self.health / self.max_health < 0.9999 {
+            draw_health_bar(self.pos, 16., self.health, self.max_health);
+        }
+    } 
+    fn mut_update(&mut self, projectiles: &mut HashMap<usize, Box<dyn Projectile>> , monsters: &HashMap<usize, Box<dyn Monster>>) {
+        Self::check_shoot(self, projectiles, monsters);
+    }
+    
+    fn id(&self) -> usize { self.id }
+}
+impl Position for Tower {
+    fn get_position(&self) -> Vec2 {
+        self.pos
     }
 }
 
@@ -187,6 +200,13 @@ trait Health {
     fn take_damage(&mut self, amount: f32);
 }
 
+fn draw_health_bar(pos: Vec2, width: f32, health: f32, max_health: f32) {
+    draw_rectangle_ex(pos.x, pos.y-8., width, 3., RED_HEALTH_BAR.clone());
+    if health > 0. {
+        draw_rectangle_ex(pos.x, pos.y-8., width*(health/max_health), 3., GREEN_HEALTH_BAR.clone());
+    }
+}
+
 trait Position {
     fn get_position(&self) -> Vec2;
 }
@@ -202,37 +222,33 @@ trait Entity: Position {
     fn id(&self) -> usize;
 }
 
-trait TowerType: Position {
-    fn mut_update(&mut self, _: &mut HashMap<usize, Box<dyn Projectile>>, _: &HashMap<usize, Box<dyn Monster>>);
-    fn draw(&self);
-    fn id(&self) -> usize;
+struct Player {
+    speed: Vec2,
+    pos: Vec2,
+    facing_right: bool,
+    health: f32,
+    max_health: f32,
+    id: usize,
+    hitbox: Rect,
 }
 
-impl TowerType for Tower {
-    fn draw(&self) {
-        let resources = storage::get::<Resources>();
-        draw_texture_ex(
-            &resources.tower_texture,
-            self.pos.x,
-            self.pos.y,
-            WHITE,
-            DrawTextureParams {
-                source: Some(Rect::new(64., 112., 16., 16.)),
-                ..Default::default()
-            },
-        );
-    } 
-    fn mut_update(&mut self, projectiles: &mut HashMap<usize, Box<dyn Projectile>> , monsters: &HashMap<usize, Box<dyn Monster>>) {
-        Self::check_shoot(self, projectiles, monsters);
-    }
-    
-    fn id(&self) -> usize { self.id }
-}
-impl Position for Tower {
-    fn get_position(&self) -> Vec2 {
-        self.pos
+
+impl Player {
+    pub const MOVE_SPEED: f32 = 5.0;
+    fn new(pos: Vec2, health: f32) -> Self {
+        Self {
+            speed: vec2(0., 0.),
+            pos,
+            facing_right: true,
+            health,
+            max_health: health,
+            id: get_id(),
+            hitbox: Rect::new(pos.x+5.,pos.y+5.,35.,41.,),
+        }
     }
 }
+
+
 
 impl Position for Player {
     fn get_position(&self) -> Vec2 {
@@ -242,8 +258,12 @@ impl Position for Player {
 
 impl Health for Player {
     fn take_damage(&mut self, amount: f32) {
-        self.health -= amount;
-        println!("{}", self.health);
+        if self.health > 0. {
+            self.health -= amount;
+        }
+        if self.health < 0. {
+            self.health = 0.;
+        }
     }
 }
 
@@ -262,10 +282,10 @@ impl Player {
                 ..Default::default()
             },
         );
-        draw_rectangle_ex(self.pos.x, self.pos.y-8., 45., 3., RED_HEALTH_BAR.clone());
-        draw_rectangle_ex(self.pos.x, self.pos.y-8., 45.*(self.health/self.max_health), 3., GREEN_HEALTH_BAR.clone());
+        draw_health_bar(self.pos, 45., self.health, self.max_health);
     }
     fn mut_update(&mut self, towers: &mut HashMap<usize, Box<dyn TowerType>>) {
+        // apply movement
         self.speed = vec2(0.0, 0.0);
         if is_key_down(KeyCode::W) {
             self.speed.y -= Self::MOVE_SPEED;
@@ -285,12 +305,15 @@ impl Player {
         } else if self.speed.x < 0. {
             self.facing_right = false;
         }
+        self.hitbox = Rect::new(self.pos.x+5., self.pos.y+5., 35., 41.);
+        // place towers
         if is_key_pressed(KeyCode::Space) {
             let tower = Tower::new(30, self.pos, 5., 500.);
             towers.insert(tower.id(), Box::new(tower));
         }
     }
     fn id(&self) -> usize { self.id }
+    fn hitbox(&self) -> Rect { self.hitbox }
 }
 
 struct EyeMonster {
@@ -301,6 +324,9 @@ struct EyeMonster {
     pos: Vec2,
     facing_right: bool,
     hitbox: Rect,
+    damage: f32,
+    damage_cd: f64,
+    last_damage_time: f64,
 }
 impl EyeMonster {
     fn new(health: f32, pos: Vec2, velocity: Vec2) -> Self {
@@ -312,11 +338,12 @@ impl EyeMonster {
             id: get_id(),
             facing_right: velocity.x > 0.,
             hitbox: Rect::new(pos.x, pos.y, 60., 54.),
+            damage: 5.,
+            damage_cd: 1.,
+            last_damage_time: 0.,
         }
     }
-    fn hitbox(&self) -> Rect {
-        self.hitbox
-    }
+    
 }
 
 trait Monster: Position {
@@ -324,6 +351,11 @@ trait Monster: Position {
     fn draw(&self);
     fn mut_update(&mut self, _: &mut HashMap<usize, Box<dyn Projectile>>, _: Vec2);
     fn health(&self) -> f32;
+    fn damage(&self) -> f32;
+    fn damage_cd(&self) -> f64;
+    fn last_damage_time(&self) -> f64;
+    fn set_last_damage_time(&mut self);
+    fn hitbox(&self) -> Rect;
 }
 
 impl Monster for EyeMonster {
@@ -340,9 +372,7 @@ impl Monster for EyeMonster {
                 ..Default::default()
             },
         );
-        draw_rectangle_ex(self.pos.x, self.pos.y-8., 60., 3., RED_HEALTH_BAR.clone());
-        draw_rectangle_ex(self.pos.x, self.pos.y-8., 60.*(self.health/self.max_health), 3., GREEN_HEALTH_BAR.clone());
-
+        draw_health_bar(self.pos, 60., self.health, self.max_health);
     }
     fn mut_update(&mut self, projectiles: &mut HashMap<usize, Box<dyn Projectile>>, target: Vec2) {
         let distance_vector = vec2(target.x - self.pos.x, target.y - self.pos.y);
@@ -359,6 +389,15 @@ impl Monster for EyeMonster {
         });
     }
     fn health(&self) -> f32 { self.health }
+    fn damage(&self) -> f32 { self.damage }
+    fn damage_cd(&self) -> f64 { self.damage_cd }
+    fn last_damage_time(&self) -> f64 {self.last_damage_time}
+    fn set_last_damage_time(&mut self) {
+        self.last_damage_time = get_time();
+    }
+    fn hitbox(&self) -> Rect {
+        self.hitbox
+    }
 }
 
 impl Position for EyeMonster {
@@ -435,15 +474,15 @@ async fn main() {
             tower.mut_update(&mut projectiles, &monsters);
         }
         // check to spawn monster
-        let monster_timer_curr = get_time();
-        if monster_timer_curr - monster_timer_prev > 6. {
+        let timer_curr = get_time();
+        if timer_curr - monster_timer_prev > 6. {
             let monster = EyeMonster::new(
                 100.,
                 vec2(0.,0.),
                 player.get_position().normalize_or_zero()*EYE_MONSTER_SPEED
             );
             monsters.insert(monster.id(), Box::new(monster));
-            monster_timer_prev = monster_timer_curr;
+            monster_timer_prev = timer_curr;
         }
 
         // draw all towers to screen
@@ -474,10 +513,17 @@ async fn main() {
             }
             retain
         });
-        // draw monsters
+        // draw monsters update movement and check damage
         let player_pos = player.get_position();
+        let player_hitbox = player.hitbox();
         for (_id, monster) in &mut monsters {
             monster.mut_update(&mut projectiles, player_pos);
+            if monster.hitbox().overlaps(&player_hitbox) {
+                if timer_curr - monster.last_damage_time() > monster.damage_cd() {
+                    player.take_damage(monster.damage());
+                    monster.set_last_damage_time();
+                }
+            }
             monster.draw();
         }
         // update and draw player
