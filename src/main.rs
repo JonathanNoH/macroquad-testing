@@ -3,6 +3,8 @@ use macroquad::experimental::collections::storage;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::hash::{Hash, Hasher};
+use std::rc::Rc;
+use std::cell::RefCell;
 
 use macroquad_tiled as tiled;
 
@@ -77,13 +79,15 @@ impl Tower {
             hitbox: Rect::new(pos.x, pos.y, 16., 16.),
         }
     }
-    fn check_shoot(&mut self, projectiles: &mut HashMap<usize, Box<dyn Projectile>>, monsters: &HashMap<usize, Box<Monster>>) {
+    fn check_shoot(&mut self, projectiles: &mut HashMap<usize, Rc<RefCell<dyn Projectile>>>, monsters: &HashMap<usize, Rc<RefCell<dyn Monster>>>, entities: &Vec<Rc<RefCell<dyn Entity>>>) {
         if get_time() - self.last_shot_time > self.shot_cooldown {
-            for (_id, monster) in monsters {
+            for (_id, monster_ref) in monsters {
+                let monster = monster_ref.borrow();
                 if monster.get_position().distance(self.pos) < 150. {
                     let velocity = monster.get_position() - self.pos;
-                    let bullet = Bullet::new(self.pos, velocity.normalize_or_zero(), self.strength);
-                    projectiles.insert(bullet.id(), Box::new(bullet));
+                    let bullet = Rc::new(RefCell::new(Bullet::new(self.pos, velocity.normalize_or_zero(), self.strength)));
+                    projectiles.insert(bullet.id(), Rc::clone(&bullet));
+                    entities.push(Rc::clone(&bullet));
                     self.last_shot_time = get_time();
                     return;
                 }
@@ -93,13 +97,12 @@ impl Tower {
 }
 
 trait TowerType: Position {
-    fn mut_update(&mut self, _: &mut HashMap<usize, Box<dyn Projectile>>, _: &HashMap<usize, Box<Monster>>, _: &HashMap<usize, Box<TowerDestroyer>>);
-    fn draw(&self);
+    fn mut_update(&mut self, _: &mut HashMap<usize, Rc<RefCell<dyn Projectile>>>, _: &HashMap<usize, Rc<RefCell<dyn Monster>>>, _: &HashMap<usize, Rc<RefCell<TowerDestroyer>>>);
     fn id(&self) -> usize;
     fn hitbox(&self) -> Rect;
 }
 
-impl TowerType for Tower {
+impl Entity for Tower {
     fn draw(&self) {
         let resources = storage::get::<Resources>();
         draw_texture_ex(
@@ -116,10 +119,14 @@ impl TowerType for Tower {
             draw_health_bar(self.pos, 16., self.health, self.max_health);
         }
     }
-    fn mut_update(&mut self, projectiles: &mut HashMap<usize, Box<dyn Projectile>> , monsters: &HashMap<usize, Box<Monster>>, tower_destroyers: &HashMap<usize, Box<TowerDestroyer>>) {
-        Self::check_shoot(self, projectiles, monsters);
-        for tower_destroyer in tower_destroyers {
-            if tower_destroyer.hitbox().overlaps(self.hitbox()) {
+}
+
+impl TowerType for Tower {
+    fn mut_update(&mut self, projectiles: &mut HashMap<usize, Rc<RefCell<dyn Projectile>>> , monsters: &HashMap<usize, Rc<RefCell<dyn Monster>>>, tower_destroyers: &HashMap<usize, Rc<RefCell<TowerDestroyer>>>, entities: &Vec<Rc<RefCell<dyn Entity>>>) {
+        Self::check_shoot(self, projectiles, monsters, entities);
+        for (_, tower_destroyer_ref) in tower_destroyers {
+            let tower_destroyer = tower_destroyer_ref.borrow_mut();
+            if tower_destroyer.hitbox().overlaps(&self.hitbox()) {
                 self.health -= tower_destroyer.damage();
             }
         }
@@ -175,17 +182,11 @@ impl Position for Bullet {
 
 trait Projectile: Position {
     fn id(&self) -> usize;
-    fn draw(&self);
     fn hitbox(&self) -> Rect;
     fn mut_update(&mut self);
     fn damage(&self) -> f32;
 }
-
-impl Projectile for Bullet {
-    fn mut_update(&mut self) {
-        self.pos += self.velocity;
-        self.hitbox.move_to(self.pos);
-    }
+impl Entity for Bullet {
     fn draw(&self) {
         let resources = storage::get::<Resources>();
         draw_texture_ex(
@@ -197,6 +198,13 @@ impl Projectile for Bullet {
                 ..Default::default()
             },
         );
+    }
+}
+
+impl Projectile for Bullet {
+    fn mut_update(&mut self) {
+        self.pos += self.velocity;
+        self.hitbox.move_to(self.pos);
     }
     fn id(&self) -> usize { self.id }
     fn hitbox(&self) -> Rect {
@@ -223,12 +231,7 @@ trait Position {
 trait Targetable: Health + Position {}
 
 trait Entity: Position {
-    fn mut_update(&mut self);
-    fn update(&self, _: &mut Vec::<Box<dyn Entity>>, _: &HashMap<usize, Box<dyn Entity>>) {
-        return
-    }
     fn draw(&self);
-    fn id(&self) -> usize;
 }
 
 struct Player {
@@ -276,8 +279,7 @@ impl Health for Player {
     }
 }
 
-
-impl Player {
+impl Entity for Player {
     fn draw(&self) {
         let resources = storage::get::<Resources>();
         draw_texture_ex(
@@ -293,7 +295,10 @@ impl Player {
         );
         draw_health_bar(self.pos, 45., self.health, self.max_health);
     }
-    fn mut_update(&mut self, towers: &mut HashMap<usize, Box<dyn TowerType>>) {
+}
+impl Player {
+
+    fn mut_update(&mut self, towers: &mut HashMap<usize, Rc<RefCell<dyn TowerType>>>) {
         // apply movement
         self.speed = vec2(0.0, 0.0);
         if is_key_down(KeyCode::W) {
@@ -317,8 +322,8 @@ impl Player {
         self.hitbox = Rect::new(self.pos.x+5., self.pos.y+5., 35., 41.);
         // place towers
         if is_key_pressed(KeyCode::Space) {
-            let tower = Tower::new(30, self.pos, 5., 500.);
-            towers.insert(tower.id(), Box::new(tower));
+            let tower = Rc::new(RefCell::new(Tower::new(30, self.pos, 5., 500.)));
+            towers.insert(tower.borrow().id(), Rc::clone(&tower));
         }
     }
     fn id(&self) -> usize { self.id }
@@ -357,8 +362,7 @@ impl EyeMonster {
 
 trait Monster: Position {
     fn id(&self) -> usize;
-    fn draw(&self);
-    fn mut_update(&mut self, _: &mut HashMap<usize, Box<dyn Projectile>>, _: &HashMap<usize, Box<dyn TowerType>>, _: Vec2);
+    fn mut_update(&mut self, _: &mut HashMap<usize, Rc<RefCell<dyn Projectile>>>, _: &HashMap<usize, Rc<RefCell<dyn TowerType>>>, _: Vec2);
     fn health(&self) -> f32;
     fn damage(&self) -> f32;
     fn damage_cd(&self) -> f64;
@@ -366,9 +370,7 @@ trait Monster: Position {
     fn set_last_damage_time(&mut self);
     fn hitbox(&self) -> Rect;
 }
-
-impl Monster for EyeMonster {
-    fn id(&self) -> usize { self.id }
+impl Entity for EyeMonster {
     fn draw(&self) {
         let resources = storage::get::<Resources>();
         draw_texture_ex(
@@ -383,12 +385,16 @@ impl Monster for EyeMonster {
         );
         draw_health_bar(self.pos, 60., self.health, self.max_health);
     }
-    fn mut_update(&mut self, projectiles: &mut HashMap<usize, Box<dyn Projectile>>, _: &HashMap<usize, Box<dyn TowerType>>, target: Vec2) {
+}
+impl Monster for EyeMonster {
+    fn id(&self) -> usize { self.id }
+    fn mut_update(&mut self, projectiles: &mut HashMap<usize, Rc<RefCell<dyn Projectile>>>, _: &HashMap<usize, Rc<RefCell<dyn TowerType>>>, target: Vec2) {
         let distance_vector = vec2(target.x - self.pos.x, target.y - self.pos.y);
         self.velocity = distance_vector.normalize_or_zero()*EYE_MONSTER_SPEED;
         self.pos += self.velocity;
         self.hitbox.move_to(self.pos);
-        projectiles.retain(|_, projectile| {
+        projectiles.retain(|_, projectile_ref| {
+            let projectile = projectile_ref.borrow();
             let mut retain = true;
             if self.hitbox().overlaps(&projectile.hitbox()) {
                 self.health -= projectile.damage();
@@ -443,8 +449,7 @@ impl TowerDestroyer {
         }
     }
 }
-impl Monster for TowerDestroyer {
-    fn id(&self) -> usize { self.id }
+impl Entity for TowerDestroyer {
     fn draw(&self) {
         let resources = storage::get::<Resources>();
         draw_texture_ex(
@@ -459,18 +464,23 @@ impl Monster for TowerDestroyer {
         );
         draw_health_bar(self.pos, 60., self.health, self.max_health);
     }
+}
+impl Monster for TowerDestroyer {
+    fn id(&self) -> usize { self.id }
+
     // modifies projectiles
-    fn mut_update(&mut self, projectiles: &mut HashMap<usize, Box<dyn Projectile>>, towers: &HashMap<usize, Box<dyn TowerType>>, player_target: Vec2) {
+    fn mut_update(&mut self, projectiles: &mut HashMap<usize, Rc<RefCell<dyn Projectile>>>, towers: &HashMap<usize, Rc<RefCell<dyn TowerType>>>, player_target: Vec2) {
         let target_tower = towers.get(&self.target);
         let target = match target_tower {
-            Some(tower) => tower.get_position(),
+            Some(tower) => tower.borrow().get_position(),
             None => player_target
         };
         let distance_vector = vec2(target.x - self.pos.x, target.y - self.pos.y);
         self.velocity = distance_vector.normalize_or_zero()*EYE_MONSTER_SPEED;
         self.pos += self.velocity;
         self.hitbox.move_to(self.pos);
-        projectiles.retain(|_, projectile| {
+        projectiles.retain(|_, projectile_ref| {
+            let projectile = projectile_ref.borrow();
             let mut retain = true;
             if self.hitbox().overlaps(&projectile.hitbox()) {
                 self.health -= projectile.damage();
@@ -506,11 +516,11 @@ async fn main() {
         &[("basictiles.png", tileset)],
         &[],
         ).unwrap();
-//    let mut entities: Vec<Box<dyn Entity>> = vec![];
-    let mut towers: HashMap<usize, Box<dyn TowerType>> = HashMap::new();
-    let mut monsters: HashMap<usize, Box<&dyn Monster>> = HashMap::new();
-    let mut projectiles: HashMap<usize, Box<dyn Projectile>> = HashMap::new();
-    let mut tower_destroyers: HashMap<usize, Box<TowerDestroyer>> = HashMap::new();
+    let mut entities: Vec<Rc<RefCell<dyn Entity>>> = vec![];
+    let mut towers: HashMap<usize, Rc<RefCell<dyn TowerType>>> = HashMap::new();
+    let mut monsters: HashMap<usize, Rc<RefCell <dyn Monster>>> = HashMap::new();
+    let mut projectiles: HashMap<usize, Rc<RefCell <dyn Projectile>>> = HashMap::new();
+    let mut tower_destroyers: HashMap<usize, Rc<RefCell<TowerDestroyer>>> = HashMap::new();
 
 
     let player_texture = load_texture("assets/disciple-45x51.png").await.unwrap();
@@ -532,8 +542,9 @@ async fn main() {
     let player_pos = vec2(240., 160.);
     let mut player = Player::new(player_pos, 100.);
 
-    let tower = Tower::new(30, vec2(160., 160.), 5., 500.);
-    towers.insert(tower.id(), Box::new(tower));
+    let tower = Rc::new(RefCell::new(Tower::new(30, vec2(160., 160.), 5., 500.)));
+    entities.push(Rc::clone(&tower));
+    towers.insert(tower.id(), Rc::clone(&tower));
 
     let width = tiled_map.raw_tiled_map.tilewidth * tiled_map.raw_tiled_map.width;
     let height = tiled_map.raw_tiled_map.tileheight * tiled_map.raw_tiled_map.height;
@@ -556,24 +567,25 @@ async fn main() {
         );
         // update actions of entities passing in spawn list in case they spawn new things
         for (_id, tower) in &mut towers {
-            tower.mut_update(&mut projectiles, &monsters, &tower_destroyers);
+            tower.mut_update(&mut projectiles, &monsters, &tower_destroyers, &mut entities);
         }
         // check to spawn monster
         let timer_curr = get_time();
         // spawn eye monster
         if timer_curr - eye_monster_timer_prev > 6. {
-            let monster = EyeMonster::new(
+            let monster = Rc::new(EyeMonster::new(
                 100.,
                 vec2(0.,0.),
                 player.get_position().normalize_or_zero()*EYE_MONSTER_SPEED
-            );
-            monsters.insert(monster.id(), Box::new(monster));
+            ));
+            entities.push(Rc::clone(&monster));
+            monsters.insert(monster.id(), Rc::clone(&monster));
             eye_monster_timer_prev = timer_curr;
         }
         // spawn tower destroyer
         if timer_curr - tower_destroyer_timer > 10. {
             let new_monster_position = vec2(0.,0.);
-            let random_tower = towers.values().next();
+            let random_tower = towers.values().next().borrow();
             let mut smallest_distance = match random_tower {
                 Some(tower) => tower.get_position().distance(new_monster_position),
                 None => 0.
@@ -597,49 +609,44 @@ async fn main() {
                     tower_id = id.clone();
                 }
             }
-            let monster = TowerDestroyer::new(
+            let monster = Rc::new(TowerDestroyer::new(
                 60.,
                 new_monster_position,
                 velocity.normalize_or_zero()*TOWER_DESTROYER_SPEED,
                 tower_id,
-            );
-            tower_destroyers.insert(monster.id(), Box::new(monster));
+            ));
+            entities.push(Rc::clone(&monster));
+            monsters.insert(monster.id(), Rc::clone(&monster));
+            tower_destroyers.insert(monster.id(), Rc::clone(&monster));
             tower_destroyer_timer = timer_curr;
         }
 
 
-        // draw all towers to screen
-        for (_id, tower) in &towers {
-            tower.draw();
-        }
         // remove projectiles out of bounds
-        projectiles.retain(|_, value| {
-                                let pos = value.get_position();
+        projectiles.retain(|_, projectile| {
+                                let pos = projectile.borrow().get_position();
                                 pos.x > 0. && pos.x < width as _ && pos.y > 0. && pos.y < height as _
                             });
-        // draw projectiles
-        for (_id, projectile) in &mut projectiles {
-            projectile.mut_update();
-            projectile.draw();
-        }
         // despawn monsters when far enough from player
         // or when monster is dead (health < 0)
         let player_pos = player.get_position();
-        monsters.retain(|_, value| {
+        monsters.retain(|_, monster_ref| {
+            let monster = monster_ref.borrow();
             let mut retain = true;
-            let pos = value.get_position();
+            let pos = monster.get_position();
             if pos.distance(player_pos) > 2000. {
                 retain = false;
             }
-            if value.health() < 0. {
+            if monster.health() < 0. {
                 retain = false
             }
             retain
         });
-        // draw monsters update movement and check damage
+        // update movement and check damage
         let player_pos = player.get_position();
         let player_hitbox = player.hitbox();
-        for (_id, monster) in &mut monsters {
+        for (_id, ref_monster) in &mut monsters {
+            let mut monster = ref_monster.borrow_mut();
             monster.mut_update(&mut projectiles, &towers, player_pos);
             if monster.hitbox().overlaps(&player_hitbox) {
                 if timer_curr - monster.last_damage_time() > monster.damage_cd() {
@@ -647,12 +654,14 @@ async fn main() {
                     monster.set_last_damage_time();
                 }
             }
-            monster.draw();
         }
 
-        // update and draw player
+        // update player
         player.mut_update(&mut towers);
-        player.draw();
+
+        for entity in entities {
+            entity.borrow().draw();
+        }
 
         next_frame().await
     }
